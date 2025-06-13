@@ -1,0 +1,316 @@
+\documentclass[openany, 12pt]{book}
+\input{preamble}
+\title{Linux Disk}
+\author{Idris}
+\date{June 2025}
+
+% chktex-file 1
+\begin{document}
+\tableofcontents
+
+\chapter{Block Devices}
+
+All disks are just devices—like keyboards or GPUs—managed by the Linux kernel.
+What makes disks special is that they are block devices, meaning data is read
+and written in fixed-size chunks with support for random access. This structure
+enables filesystems, caching, and efficient IO.\@
+
+\section{Block}
+A block device enables:
+
+\begin{center}
+	\begin{tabular}{ll}
+		\toprule
+		caching      & blocks numbered---kernel can cache blocks in ram (page cache).    \\
+		filesystems  & reading/writing data/metadata offsets---needs random block access \\
+		efficient io & dag                                                               \\
+		\bottomrule
+	\end{tabular}
+\end{center}
+
+\begin{definition}{Source Of Truth}{}
+	The same block can exist in memory or on disk, which begs the question---which
+	is the source of truth? To write data, the block must be moved into memory,
+	and then made ``dirty'', ie changed.  The dirty block is the source of
+	truth.  For a clean block, the source of truth is memory or disk, though
+	most blocks will not be in memory.
+\end{definition}
+
+\begin{definition}{drive firmware}{}
+	The disk controller (in the drive firmware) exposes the disk as a Linear
+	Block Address (LBA) space—a flat array of block numbers like:
+
+	\begin{align*}
+		\text{LBA}_0, \text{LBA}_1, \ldots, \text{LBA}_N
+	\end{align*}
+
+	When the OS issues a read/write to block 42, the controller translates that
+	to a physical location (e.g., cylinder/head/sector or NAND page). This
+	abstraction is standardized, which is why all block devices—from spinning
+	HDDs to NVMe SSDs—present the same numbered interface.
+\end{definition}
+
+\begin{table}[h]
+	\centering
+	\begin{tabular}{lll}
+		\toprule
+		\textbf{Type}      & \textbf{Example}               & \textbf{Description}          \\
+		\midrule
+		Whole disk         & \texttt{/dev/sda}              & Entire physical disk          \\
+		Partition          & \texttt{/dev/sda1}             & Subdivision of a disk         \\
+		Loop device        & \texttt{/dev/loop0}            & File-backed block device      \\
+		LVM logical volume & \texttt{/dev/mapper/vg-lv}     & Device-mapper virtual volume  \\
+		Software RAID      & \texttt{/dev/md0}              & Aggregated disk via mdadm     \\
+		ZRAM device        & \texttt{/dev/zram0}            & Compressed RAM-backed block   \\
+		DM-Crypt (LUKS)    & \texttt{/dev/mapper/cryptroot} & Encrypted block device        \\
+		RAM disk           & \texttt{/dev/ram0}             & Legacy RAM-based block device \\
+		\bottomrule
+	\end{tabular}
+	\caption{Common Block Device Types in Linux}
+\end{table}
+
+\section{Sector}
+\begin{definition}{sector}{}
+	While the term block is the most commonly encountered one when talking about
+	``block'' devices, disk devices are actually addressed by sector. A sector
+	is the smallest addressable unit of a block device—typically \SI{512}{\byte}
+	or \SI{4}{\kibi\byte}.
+
+	Filesystems often operate on larger logical blocks built from sectors (e.g.,
+	\SI{4}{\kibi\byte}), but the sector remains the atomic I/O unit for hardware
+	and the kernel.
+
+	Just learn to keep that tension in your brain as you read
+	this, as that inexact phrasing dominates nearly all literature about this
+	topic.
+\end{definition}
+
+\begin{table}[h]
+	\centering
+	\begin{tabular}{llll}
+		\toprule
+		\textbf{name} & \textbf{typical size}                   & \textbf{who uses it}                  & \textbf{what for}              \\
+		\midrule
+		page          & \SI{4}{\kibi\byte}                      & memory (MMU, kernel)                  & virtual memory, paging         \\
+		sector        & \SI{512}{\byte}--\SI{4}{\kibi\byte}     & storage hardware, kernel              & atomic disk I/O                \\
+		block         & \SI{4}{\kibi\byte}--\SI{64}{\kibi\byte} & filesystem                            & allocation, structure          \\
+		cluster       & \SI{4}{\kibi\byte}--\SI{64}{\kibi\byte} & FAT/NTFS filesystems                  & group of blocks for allocation \\
+		extent        & variable                                & modern filesystems (ext4, XFS, Btrfs) & contiguous allocation range    \\
+		\bottomrule
+	\end{tabular}
+	\caption{Standard units in memory and storage}
+\end{table}
+
+\section{FileSystem}
+\begin{table}[h]
+	\setlength{\tabcolsep}{4pt}
+	\centering
+	\resizebox{\textwidth}{!}{%
+		\begin{tabular}{llllllll}
+			\toprule
+			{filesystem} & {category}  & {allocation} & {metadata}      & {recovery}     & {snapshots}  & {checksums}    & {compression}   \\
+			\midrule
+			ext4         & local       & block bitmap & journaling      & journal        & no           & no             & no              \\
+			xfs          & local       & extents      & b-tree + log    & log replay     & no           & metadata only  & no              \\
+			btrfs        & local       & extents      & cow b-trees     & atomic cow     & yes          & yes            & yes             \\
+			f2fs         & local       & segments     & nat/sit         & log replay     & no           & optional       & optional        \\
+			zfs          & local       & extents      & cow b-trees     & trans.\ groups & yes          & yes            & yes             \\
+			apfs         & local       & extents      & b-trees + cow   & atomic cow     & yes          & yes            & yes             \\
+			ntfs         & local       & clusters     & mft             & journal        & shadow copy  & metadata only  & yes             \\
+			fat32        & local       & clusters     & fat table       & none           & no           & no             & no              \\
+			nfs          & network     & n/a          & server-side     & n/a            & server-side  & server-side    & server-side     \\
+			sshfs        & network     & n/a          & passthrough     & n/a            & no           & no             & no              \\
+			cephfs       & network     & object-based & distributed     & fs journal     & yes          & yes            & yes             \\
+			fuse         & user-space  & n/a          & user-defined    & n/a            & user-defined & user-defined   & user-defined    \\
+			overlayfs    & overlay     & passthrough  & union of dirs   & volatile       & upper layer  & no             & no              \\
+			tmpfs        & memory      & ram pages    & kernel-internal & none           & no           & no             & yes (zram)      \\
+			iso9660      & read-only   & fixed layout & static table    & none           & no           & optional (crc) & optional (rare) \\
+			ipfs         & p2p/content & blockstore   & merkledag       & immutable      & yes          & yes (by hash)  & no              \\
+			\bottomrule
+		\end{tabular}
+	}
+	\caption{Comparison of filesystems by key characteristics and category}
+\end{table}
+
+\begin{definition}{allocation}{}
+	How a filesystem decides where on disk to place file data. Some use
+	fixed-size blocks, others group them into extents. Some delay allocation
+	until writeback, others allocate immediately. The strategy affects
+	fragmentation, performance, and metadata overhead.
+\end{definition}
+
+\begin{definition}{extent}{}
+	Contiguous range of blocks on disk treated as a single unit. Instead of
+	tracking each block individually, the filesystem records the starting block
+	and the length. This reduces metadata overhead and improves performance for
+	large files.
+\end{definition}
+
+\begin{enumerate}
+	\item \textbf{Structure \& Organization}
+	      \begin{enumerate}
+		      \item \textbf{Filesystem:} The overall structure of how files and
+		            directories are arranged on storage.
+		      \item \textbf{Metadata:} Information *about* files, such as names,
+		            sizes, timestamps, and permissions.
+	      \end{enumerate}
+	\item \textbf{Data Management \& Efficiency}
+	      \begin{enumerate}
+		      \item \textbf{Allocation:} The method by which disk space is
+		            assigned to files.
+		      \item \textbf{Compression:} Reducing file size to optimize storage
+		            space and transfer speeds.
+	      \end{enumerate}
+	\item \textbf{Resilience \& Advanced Features}
+	      \begin{enumerate}
+		      \item \textbf{Recovery:} The ability to restore the file system to
+		            a consistent state following failures or data corruption.
+		      \item \textbf{Checksums:} Mechanisms for verifying data integrity,
+		            detecting accidental changes or corruption.
+		      \item \textbf{Snapshots:} Point-in-time copies of the file system,
+		            crucial for backups, versioning, and disaster recovery.
+	      \end{enumerate}
+\end{enumerate}
+
+\begin{definition}{Filesystem}{}
+	A \textbf{filesystem} is a kernel-resident function that maps
+	\textit{inode-level operations} to \textit{block-level operations}: \[
+		\text{inode\_op} \;\Rightarrow\; \text{[block\_op]} \] It translates
+	high-level actions like \texttt{open}, \texttt{read}, \texttt{write}, and
+	\texttt{mkdir} into precise sequences of reads and writes on a block device.
+
+	Once mounted, the filesystem hooks into the kernel's VFS tree, and all
+	accesses under the mount point are routed through this translation layer.
+\end{definition}
+
+\chapter{Device Mapper}
+\begin{align*}
+	I         & := \text{inode ops}       \\
+	S         & := \text{sector ops}      \\
+	f         & := \text{file system ops} \\
+	d         & := \text{device mapper}   \\
+	f         & :  I \to S                \\
+	d         & :  S \to S                \\
+	d \circ f & : I \to S                 \\
+\end{align*}
+
+\begin{definition}{luks}{}
+	\begin{align*}
+		S_1 & := \text{plain sector}     \\
+		S_2 & := \text{encrypted sector} \\
+		d   & := \text{luks}             \\
+		d   & : S_1 \to S_2
+	\end{align*}
+	\begin{alist}
+		\item transparent sector-level encryption
+		\item decryption happens on io path
+		\item user never sees ciphertext; the disk never sees plaintext.
+		\item implemented via \texttt{dm-crypt} and \texttt{cryptsetup}
+	\end{alist}
+\end{definition}
+
+\begin{definition}{pv (physical volume)}{}
+	\begin{align*}
+		S_0 & := \text{raw sector device}        \\
+		S_1 & := \text{lvm-tracked sector space} \\
+		d   & := \text{pv init}                  \\
+		d   & : S_0 \to S_1
+	\end{align*}
+	\begin{alist}
+		\item first wedge in the LVM stack
+		\item just marks a sector as eligible for lvm
+		\item stores metadata in reserved sectors
+		\item created via \texttt{pvcreate}
+	\end{alist}
+\end{definition}
+
+\chapter{Disko}
+\begin{definition}{Purpose}{}
+	The purpose of disko is to go from a raw block storage device to a fully
+	configured, partitioned disk with installed filesystems, ready to mount or
+	ready for boot.
+\end{definition}
+
+device
+disk
+partition
+
+\chapter{Tools}
+\begin{definition}{fdisk}{}
+	dialogue-driven command-line utility that creates and manipulates partition
+	tables and partitions on a hard disk. Hard disks are divided into partitions
+	and this division is described in the partition table.
+	\begin{verbatim}
+fdisk -l <block device>
+    \end{verbatim}
+\end{definition}
+
+\chapter{LUKS}
+\begin{definition}{LUKS}{}
+	linux unified key setup
+\end{definition}
+
+\begin{intuition}{LUKS}{}
+	It's a way to encrypt block level disks at rest. Once you decrypt and mount
+	it, it appears just like any other device or filesystem for an application
+	that is using it.
+\end{intuition}
+
+\begin{enumerate}[label = {(\arabic*)}]
+	\item dm-crypt
+	\item full disk encryption
+\end{enumerate}
+
+\begin{verbatim}
+sudo cryptsetup luksOpen /dev/sda4 my-drive
+sudo mkfs.ext4 /dev/mapper/my-drive -L my-drive
+sudo mkdir /mnt/data
+sudo mount /dev/mapper/my-drive /mnt/data
+sudo cryptsetup luksAddKey --key-slot 1
+sudo cryptsetup luksHeaderRestore /dev/sda4
+cryptsetup luksDump /dev/xvda5
+cryptsetup luksHeaderBackup /dev/xvda5 --header-backup-file LuckyHeader.bin
+cfdisk /dev/xvdb
+cryptsetup luksFormat /dev/xvdb
+cryptsetup luksOpen /dev/xvd DataDrive
+mkfs.ext 4 /dev/mapper/DataDrive
+fsck /dev/mapper/DataDrive
+\end{verbatim}
+
+\begin{verbatim}
+lsblk
+fdisk /dev/sdd
+cryptsetup open /dev/sdd1 drive
+mount /dev/mapper/drive /mnt
+cryptsetup close drive
+\end{verbatim}
+
+\begin{definition}{dm-crypt}{}
+	a linux device mapper and kernel module for encryption
+\end{definition}
+
+\begin{definition}{device mapper}{}
+	Framework provided by the Linux kernel for mapping physical block devices
+	onto higher-level virtual block devices. It forms the foundation of the
+	\begin{enumerate}[label = {(\arabic*)}]
+		\item logical volume manager (LVM)
+		\item software RAIDs
+		\item dm-crypt disk encryption
+		\item file system snapshots
+	\end{enumerate}
+	\begin{align*}
+		\text{deviceMapper}: \text{block} \to \text{block}
+	\end{align*}
+\end{definition}
+
+\begin{enumerate}[label = {(\arabic*)}]
+	\item pvcreate
+	\item vgcreate
+	\item lvcreate
+\end{enumerate}
+
+cryptsetup
+keyslot
+luks header
+
+\end{document}
