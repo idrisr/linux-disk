@@ -1,3 +1,4 @@
 # README
 
-README real good
+
+[View the latest PDF](./linux-disks.pdf)
