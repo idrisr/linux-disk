@@ -126,6 +126,7 @@ A block device enables:
 			tmpfs        & memory      & ram pages    & kernel-internal & none           & no           & no             & yes (zram)      \\
 			iso9660      & read-only   & fixed layout & static table    & none           & no           & optional (crc) & optional (rare) \\
 			ipfs         & p2p/content & blockstore   & merkledag       & immutable      & yes          & yes (by hash)  & no              \\
+			initramfs    & memory      & cpio archive & static layout   & none           & no           & no             & no              \\
 			\bottomrule
 		\end{tabular}
 	}
@@ -183,33 +184,71 @@ A block device enables:
 	accesses under the mount point are routed through this translation layer.
 \end{definition}
 
-\chapter{Device Mapper}
-\begin{align*}
-	I         & := \text{inode ops}       \\
-	S         & := \text{sector ops}      \\
-	f         & := \text{file system ops} \\
-	d         & := \text{device mapper}   \\
-	f         & :  I \to S                \\
-	d         & :  S \to S                \\
-	d \circ f & : I \to S                 \\
-\end{align*}
+\chapter{Partitions}
+\section{Boot Firmware}
+The type of boot firmware a computer has changes the types of partitions that
+are valid on a disk for that computer.  The main purpose of the firmware is to
+find the bootloader, and to find the bootloader, the firmware needs to look into
+partitions.  Those partitions need a standard format, so that the firmware can
+access any partition on first communication. The older type of firmware is bios,
+and it expects Master Boot Record type partitions.
 
-\begin{definition}{luks}{}
-	\begin{align*}
-		S_1 & := \text{plain sector}     \\
-		S_2 & := \text{encrypted sector} \\
-		d   & := \text{luks}             \\
-		d   & : S_1 \to S_2
-	\end{align*}
+\begin{definition}{Master Boot Record}{}
+	It's essentially a fixed location on a fixed sector of the disk.
+\end{definition}
+
+\begin{definition}{GPT}{}
+	It's essentially a fixed location on a fixed sector of the disk.
+\end{definition}
+
+\begin{table}[ht]
+	\centering
+	\begin{tabular}{lll}
+		\toprule
+		\textbf{Type}                       & \textbf{Firmware} & \textbf{Description}                                     \\
+		\midrule
+		Primary                             & BIOS              & Up to 4 primary partitions.                              \\
+		Extended                            & BIOS              & container for logical partitions.                        \\
+		Logical                             & BIOS              & inside an extended partition.                            \\
+		Boot                                & Both              & Contains the kernel, initrd, and bootloader files.       \\
+		Swap                                & Both              & for virtual memory (paging) when RAM is full.            \\
+		Root (\texttt{/})                   & Both              & contains the system's core files and directories.        \\
+		EFI System Partition (\texttt{ESP}) & UEFI              & bootloaders and system files, FAT32 format.              \\
+		LVM                                 & Both              & volume management, allowing resizing and snapshots.      \\
+		RAID                                & Both              & for software RAID configurations (e.g., \texttt{mdadm}). \\
+		Linux Filesystem (ext4, XFS)        & Both              & formatted with specific Linux filesystems.               \\
+		Linux Reserved                      & Both              & special purposes or system recovery.                     \\
+		\bottomrule
+	\end{tabular}
+	\caption{Partition Types in Linux and Firmware Compatibility}
+\end{table}
+
+\begin{definition}{sample setup}{}
 	\begin{alist}
-		\item transparent sector-level encryption
-		\item decryption happens on io path
-		\item user never sees ciphertext; the disk never sees plaintext.
-		\item implemented via \texttt{dm-crypt} and \texttt{cryptsetup}
+		\item \textbf{EFI System Partition (ESP)}: \texttt{FAT32}, approximately
+		512MB, mounted at \texttt{/boot/efi} for boot files.
+		\item \textbf{Root Partition}: \texttt{Ext4}, approximately 15-20GB,
+		mounted at \texttt{/} for system files.
+		\item \textbf{Home Partition}: \texttt{Ext4}, utilizes remaining space,
+		mounted at \texttt{/home} for user data.
+		\item \textbf{Swap Partition}: \texttt{Linux-swap}, approximately 4GB, for memory overflow.
+		\item \textbf{Data Partition}: Optional, for shared storage (discussed
+		later).
 	\end{alist}
 \end{definition}
 
-\begin{definition}{pv (physical volume)}{}
+\chapter{Device Mapper}
+\begin{align*}
+	I         & := \text{inode ops}             \\
+	S         & := \text{sector ops}            \\
+	f         & := \text{file system sys calls} \\
+	d         & := \text{device mapper}         \\
+	f         & :  I \to S                      \\
+	d         & :  S \to S                      \\
+	d \circ f & : I \to S                       \\
+\end{align*}
+
+\begin{definition}{Physical Volume}{}
 	\begin{align*}
 		S_0 & := \text{raw sector device}        \\
 		S_1 & := \text{lvm-tracked sector space} \\
@@ -221,6 +260,90 @@ A block device enables:
 		\item just marks a sector as eligible for lvm
 		\item stores metadata in reserved sectors
 		\item created via \texttt{pvcreate}
+	\end{alist}
+\end{definition}
+
+\begin{definition}{Volume Group}{}
+	\begin{align*}
+		S_1 & := \text{lvm-tracked sector space (from PVs)} \\
+		S_2 & := \text{allocatable pool of extents}         \\
+		d   & := \text{vg init}                             \\
+		d   & : \{S_1\} \to S_2
+	\end{align*}
+	\begin{alist}
+		\item second wedge in the LVM stack
+		\item pools multiple PVs into a single storage namespace
+		\item abstracts physical layout into a unified extent map
+		\item created via \texttt{vgcreate}, extended via \texttt{vgextend}
+	\end{alist}
+\end{definition}
+
+\begin{table}[h]
+	\centering
+	\begin{tabular}{lllll}
+		\toprule
+		\textbf{Block Device} & \textbf{LUKS} & \textbf{PV} & \textbf{VG} & \textbf{LV} \\
+		\midrule
+		/dev/nvme0n1          & crypt-nvme0n1 & pv-nvme0n1  & fast\_vg    & home        \\
+		/dev/nvme1n1          & crypt-nvme1n1 & pv-nvme1n1  & fast\_vg    & swap        \\
+		/dev/sda1             & crypt-sda1    & pv-sda1     & slow\_vg    & media       \\
+		/dev/sdb1             & crypt-sdb1    & pv-sdb1     & slow\_vg    & media       \\
+		/dev/sdc1             & crypt-sdc1    & pv-sdc1     & slow\_vg    & media       \\
+		\bottomrule
+	\end{tabular}
+	\caption{LVM layering from block devices through LUKS to logical volumes}
+\end{table}
+
+\begin{intuition}{LVM}{}
+	Physical Volumes get a block device eligible for LVM.\@ Then you want to
+	pool them together into Volume Groups. From there, you split them back into
+	Logical Volumes, like \texttt{home}, \texttt{data}, \texttt{media}, etc.
+
+	If you have multiple disk types — like external USBs, SATA disks, NVMe — then
+	you probably want one Volume Group per disk type. That way, you can ensure
+	your Logical Volume goes on the right kind of disk — like \texttt{home} on a
+	fast disk, and \texttt{media} on the big slow disk.
+\end{intuition}
+
+\begin{definition}{Logical Volume}{}
+	\begin{align*}
+		S_2 & := \text{allocatable pool of extents (from VG)} \\
+		S_3 & := \text{linear address space for user data}    \\
+		d   & := \text{lv init}                               \\
+		d   & : S_2 \to S_3
+	\end{align*}
+	\begin{alist}
+		\item final wedge in the LVM stack
+		\item defines usable block devices (e.g., \texttt{/dev/vg0/lv0})
+		\item supports resizing, snapshots, and striping
+		\item created via \texttt{lvcreate}, resized via \texttt{lvextend}, \texttt{lvreduce}
+	\end{alist}
+\end{definition}
+
+\begin{definition}{extent}{}
+	\begin{align*}
+		e & := \text{contiguous region of sectors}                    \\
+		e & \subset S \quad \text{where } S \text{ is a sector space}
+	\end{align*}
+	\begin{alist}
+		\item atomic allocation unit in LVM
+		\item same size across all PVs in a VG (default: \SI{4}{\mebi\byte})
+		\item logical volumes are built from extents
+	\end{alist}
+\end{definition}
+
+\begin{definition}{LUKS}{}
+	\begin{align*}
+		S_1 & := \text{plain sector}     \\
+		S_2 & := \text{encrypted sector} \\
+		d   & := \text{luks}             \\
+		d   & : S_1 \to S_2
+	\end{align*}
+	\begin{alist}
+		\item transparent sector-level encryption
+		\item decryption happens on io path
+		\item user never sees ciphertext; the disk never sees plaintext.
+		\item implemented via \texttt{dm-crypt} and \texttt{cryptsetup}
 	\end{alist}
 \end{definition}
 
@@ -236,6 +359,26 @@ disk
 partition
 
 \chapter{Tools}
+\begin{definition}{installer}{}
+	An installer is a bootable disk that can create another bootable disk.  The
+	reason you must run it is because it needs to survey the hardware and query
+	the user for preferences. You can possibly combine both of those steps in
+	nix if you know your destination hardware and encode the user preferences in
+	the configuration.
+
+	\begin{center}
+		\begin{tabular}{ll}
+			\toprule
+			element           & description                                              \\
+			\midrule
+			bootable disk     & a disk you can boot from (like a usb).                   \\
+			installer program & a program that runs from the bootable disk.              \\
+			target disk       & the disk where the program installs the operating system \\
+			\bottomrule
+		\end{tabular}
+	\end{center}
+\end{definition}
+
 \begin{definition}{fdisk}{}
 	dialogue-driven command-line utility that creates and manipulates partition
 	tables and partitions on a hard disk. Hard disks are divided into partitions
@@ -243,6 +386,15 @@ partition
 	\begin{verbatim}
 fdisk -l <block device>
     \end{verbatim}
+\end{definition}
+
+\begin{definition}{fstab}{}
+	About these things, and basically only these things:
+	\begin{enumerate}[label = {(\arabic*)}]
+		\item locate a block device (partition is a block device)
+		\item find its filesystem
+		\item mount the filesystem on a mount point in the root filesystem
+	\end{enumerate}
 \end{definition}
 
 \chapter{LUKS}
